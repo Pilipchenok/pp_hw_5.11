@@ -4,13 +4,20 @@
 #include <queue>
 #include <condition_variable>
 #include <functional>
+#include <iostream>
 
-int main()
-{
+struct task_t {
+  void operator()();
+};
 
+static std::mutex cout_mx;
+
+void task_t::operator()() {
+  using namespace std::chrono_literals;
+  std::this_thread::sleep_for(200ms);
+  std::lock_guard<std::mutex> lock(cout_mx); //osyncstream нет на macOS :(((
+  std::cout << "!\n";
 }
-
-struct task_t { void operator()(); };
 
 struct th_pool_t
 {
@@ -18,9 +25,12 @@ struct th_pool_t
     explicit th_pool_t(unsigned int k);
     ~th_pool_t();
     void submit(f_t f);
+    void wait();
   private:
     void execute();
     std::queue< f_t > tasks_;
+    size_t count_tasks = 0;
+    std::condition_variable cw_;
     std::mutex mx_;
     std::condition_variable cd_;
     bool stop_{false};
@@ -31,6 +41,7 @@ void th_pool_t::submit(f_t f)
 {
   mx_.lock();
   tasks_.push(std::move(f));
+  count_tasks++;
   mx_.unlock();
   cd_.notify_one();
 }
@@ -63,5 +74,30 @@ void th_pool_t::execute() {
     lck.unlock();
     try { task(); } catch (...) {}
     lck.lock();
+    count_tasks--;
+    if (count_tasks == 0)
+    {
+      cw_.notify_all();
+    }
   } while (!stop_ || !tasks_.empty());
+}
+
+void th_pool_t::wait()
+{
+  std::unique_lock<std::mutex> lck(mx_);
+  auto proceed = [&]() {
+    return count_tasks == 0;
+  };
+  cw_.wait(lck, proceed);
+}
+
+int main()
+{
+  th_pool_t pool(5);
+  for (size_t i = 0; i < 10; ++i)
+  {
+    pool.submit(task_t{});
+  }
+  pool.wait();
+  std::cout << "123\n";
 }
